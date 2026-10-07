@@ -5,21 +5,28 @@ A high-performance Go backend built with **Gin** and **MongoDB Atlas**, powering
 ![Language](https://img.shields.io/badge/Language-Go_1.22+-00ADD8?style=flat-square&logo=go)
 ![Framework](https://img.shields.io/badge/Framework-Gin-000000?style=flat-square&logo=gin)
 ![Database](https://img.shields.io/badge/Database-MongoDB-47A248?style=flat-square&logo=mongodb)
+![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub_Actions-2088FF?style=flat-square&logo=github-actions)
 
 ---
 
 ## 🏗️ Architecture & Project Structure
 
-The project follows the standard Go project layout, cleanly decoupling transport routing, business logic, and database operations using an encapsulated `internal/` structure.
+The project follows a clean, modular Go layout, decoupling transport handlers, business logic, domain models, and database access:
 
 ```text
 .
-├── api/              # RESTful API handlers & router setup
+├── api/              # REST handlers, middleware, & router setup
 ├── cmd/              # Application entry points (main.go)
-├── internal/         # Core domain logic, services, and repositories
-├── migrations/       # Database initialization & schema scripts
-├── .air.toml         # Hot-reload configuration for local development
-└── docker-compose.yml
+├── configs/          # Configuration loaders
+├── internal/         # Private application and domain logic
+│   ├── database/     # DB connections (MongoDB)
+│   ├── models/       # Domain data models (Author, Blog, etc.)
+│   └── repository/   # Data access layer & interfaces
+├── migrations/       # Database schema evolution scripts
+├── swagger/          # OpenAPI/Swagger documentation specs
+├── Dockerfile
+├── docker-compose.yml
+└── go.mod
 ```
 
 ---
@@ -36,13 +43,11 @@ Ensure you have the following installed on your machine:
 
 ## ⚙️ Configuration (.env)
 
-Create a `.env` file in the root directory and configure the following environment variables:
-
-```env
-PORT=8080
-MONGODB_URI=your_mongodb_atlas_connection_string
-JWT_SECRET=your_secret_key
-```
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+2. Populate the required environment variables in your `.env` file.
 
 ---
 
@@ -75,6 +80,29 @@ go mod download
   ```bash
   docker-compose up --build
   ```
+
+---
+
+## 🧪 Testing
+
+The repository includes handler unit and integration tests under the `api/handler` package to verify route behaviors and data handling.
+
+Execute the test suite using:
+
+```bash
+# Run API handler tests verbosely
+go test -v ./api/handler
+
+```
+
+---
+
+## 🔄 CI/CD Pipeline
+
+This project leverages **GitHub Actions** to automate workflows:
+
+- **Automated Testing:** Every pull request and push to main triggers automated test execution against handlers to catch regressions early.
+- **Build Verification:** Ensures compilation stability and code quality before deployment.
 
 ---
 
