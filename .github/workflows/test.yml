@@ -2,9 +2,7 @@ name: CI Security Gatekeeper
 
 on:
   push:
-    branches: [master, RBAC]
   pull_request:
-    branches: [master, RBAC]
 
 jobs:
   run-tests:
