@@ -1,0 +1,229 @@
+package handler
+
+import (
+	"net/http"
+	"time"
+
+	"razorblog-backend/internal/models/author"
+	"razorblog-backend/internal/repository"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// JWT secret (load from env in production)
+var jwtSecret = []byte("supersecretkey")
+
+// AuthorHandler holds repository reference
+type AuthorHandler struct {
+    Repo repository.IAuthorRepository // Change this to the Interface
+}
+
+// NewAuthorHandler creates a new AuthorHandler
+func NewAuthorHandler(repo repository.IAuthorRepository) *AuthorHandler { // Change this too
+    return &AuthorHandler{Repo: repo}
+}
+
+// RegisterAuthor godoc
+// RegisterAuthor godoc
+func (h *AuthorHandler) RegisterAuthor(c *gin.Context) {
+	var req struct {
+		Name     string `json:"name" binding:"required"`
+		Email    string `json:"email" binding:"required,email"`
+		Phone    string `json:"phone"`
+		Password string `json:"password" binding:"required,min=6"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	existing, _ := h.Repo.GetAuthorByEmail(req.Email)
+	if existing != nil {
+		c.JSON(http.StatusConflict, map[string]string{"error": "email already registered"})
+		return
+	}
+
+	hashedPwd, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+		return
+	}
+
+	newAuthor := &author.Author{
+		Name:      req.Name,
+		Email:     req.Email,
+		Phone:     req.Phone,
+		Password:  string(hashedPwd),
+		// Explicitly set role to guest to prevent privilege escalation
+		Role:      author.RoleGuest, 
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	created, err := h.Repo.CreateAuthor(newAuthor)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Sanitize output
+	created.Password = ""
+	c.JSON(http.StatusCreated, map[string]interface{}{"author": created})
+}
+
+// LoginAuthor godoc
+// LoginAuthor godoc
+func (h *AuthorHandler) LoginAuthor(c *gin.Context) {
+    var req struct {
+        Email    string `json:"email" binding:"required,email"`
+        Password string `json:"password" binding:"required"`
+    }
+
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+        return
+    }
+
+    authorObj, err := h.Repo.GetAuthorByEmail(req.Email)
+    if err != nil || authorObj == nil {
+        c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+        return
+    }
+
+    if err := bcrypt.CompareHashAndPassword([]byte(authorObj.Password), []byte(req.Password)); err != nil {
+        c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+        return
+    }
+
+    // Include the role in the JWT claims
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+        "author_id": authorObj.ID.Hex(),
+        "role":      authorObj.Role, // Added role to JWT
+        "exp":       time.Now().Add(72 * time.Hour).Unix(),
+    })
+
+    tokenString, err := token.SignedString(jwtSecret)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate token"})
+        return
+    }
+
+    // Return the role in the response for immediate frontend use (badges/UI)
+    c.JSON(http.StatusOK, map[string]interface{}{
+        "token":    tokenString,
+        "authorId": authorObj.ID.Hex(),
+        "role":     authorObj.Role, 
+    })
+}
+
+// GetAuthor godoc
+// Private profile: returns all info
+func (h *AuthorHandler) GetAuthor(c *gin.Context) {
+	idParam := c.Param("id")
+	objID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	authorObj, err := h.Repo.GetAuthorByID(objID)
+	if err != nil || authorObj == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "author not found"})
+		return
+	}
+
+	// hide password only
+	authorObj.Password = ""
+
+	c.JSON(http.StatusOK, gin.H{"author": authorObj})
+}
+
+// UpdateAuthor godoc
+func (h *AuthorHandler) UpdateAuthor(c *gin.Context) {
+	idParam := c.Param("id")
+	objID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var update map[string]interface{}
+	if err := c.ShouldBindJSON(&update); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// --- SECURITY BLOCK: STRIP SENSITIVE FIELDS ---
+	// This ensures a guest cannot promote themselves to founder
+	// or change their unique ID via a PUT request.
+	delete(update, "role")
+	delete(update, "_id")
+	delete(update, "id")
+	delete(update, "email") // Usually, email updates should have a separate verified flow
+	// ----------------------------------------------
+
+	if pwd, ok := update["password"].(string); ok && pwd != "" {
+		hashedPwd, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+		update["password"] = string(hashedPwd)
+	}
+
+	update["updated_at"] = time.Now()
+	
+	if err := h.Repo.UpdateAuthor(objID, update); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "author updated"})
+}
+
+// DeleteAuthor godoc
+func (h *AuthorHandler) DeleteAuthor(c *gin.Context) {
+	idParam := c.Param("id")
+	objID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := h.Repo.DeleteAuthor(objID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "author deleted"})
+}
+
+// GetPublicAuthor godoc
+// Public profile: only image, name, bio
+func (h *AuthorHandler) GetPublicAuthor(c *gin.Context) {
+	idParam := c.Param("id")
+	objID, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid author id"})
+		return
+	}
+
+	authorObj, err := h.Repo.GetAuthorByID(objID)
+	if err != nil || authorObj == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "author not found"})
+		return
+	}
+
+	// Hide sensitive info for public
+	authorObj.Password = ""
+	authorObj.Email = ""
+	authorObj.Phone = ""
+	authorObj.CreatedAt = time.Time{} // optional: hide join date
+
+	c.JSON(http.StatusOK, gin.H{"author": authorObj})
+}
+
